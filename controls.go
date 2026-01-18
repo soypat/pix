@@ -8,22 +8,6 @@ import (
 	"github.com/soypat/geometry/ms2"
 )
 
-// CurvePoint is a control point for curve-type controls.
-// X represents input (0-1), Y represents output (0-1).
-type CurvePoint = ms2.Vec
-
-// ControlType indicates the UI control type for a filter parameter.
-type ControlType int
-
-const (
-	// ControlTypeSelect is a dropdown/enum selection.
-	ControlTypeSelect ControlType = iota
-	// ControlTypeSlider is a numeric slider (int or float).
-	ControlTypeSlider
-	// ControlTypeCurve is a spline curve editor with control points.
-	ControlTypeCurve
-)
-
 // Control represents an editable parameter of a filter.
 // When Value is modified via OnChange, the filter updates its output immediately.
 type Control interface {
@@ -103,6 +87,10 @@ func (ce *ControlEnum[T]) ChangeValue(newValue any) error {
 	}
 	return err
 }
+
+// CurvePoint is a control point for curve-type controls.
+// X represents input (0-1), Y represents output (0-1).
+type CurvePoint = ms2.Vec
 
 // ControlCurve is a spline curve control with editable control points.
 // Points are in normalized 0-1 range for both X (input) and Y (output).

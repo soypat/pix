@@ -18,6 +18,11 @@ Credit to Amken3D GPU approach to filtering.
 - **Filter pipeline**: Composable filters with in-place operation support
 - **Embedded-friendly**: Supports display formats like ST7789 (RGB565BE)
 
+## Module structure
+- `pix.go` - Contains top level interface abstractions.
+- `controls.go` - `Control` type and implementations.
+- `filters` - Directory containing image filter implementations.
+    - `filters/point-filter.go` - Most basic filter implementation- pixel-by-pixel image transformation. `grayscale.go` and `invert.go` use this filter base
 
 ## Example
 
