@@ -1,4 +1,5 @@
 # Go workspaces.
+go.sum
 go.work
 go.work.sum
 # Test binary, built with `go test -c`
@@ -15,6 +16,7 @@ vendor/
 *.so
 *.dylib
 *.hex
+
 
 # `__debug_bin` Debug binary generated in VSCode when using the built-in debugger.
 **__debug_bin*
