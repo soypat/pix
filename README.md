@@ -22,9 +22,12 @@ Credit to Amken3D GPU approach to filtering.
 - `pix.go` - Contains top level interface abstractions.
 - `controls.go` - `Control` type and implementations.
 - `filters` - Directory containing image filter implementations.
-    - `filters/point-filter.go` - Most basic filter implementation- pixel-by-pixel image transformation. `grayscale.go` and `invert.go` use this filter base
+    - `filters/point-filter.go` - Most basic CPU filter implementation- pixel-by-pixel image transformation. `grayscale.go` and `invert.go` use this filter base
+    - `filters/point-filter-gpu.go` - GPU-accelerated filter base using WebGPU compute shaders. `grayscale_gpu.go` and `invert_gpu.go` use this base
 
-## Example
+## Examples
+
+### CPU Filters
 
 ```go
 import (
@@ -42,5 +45,29 @@ outDims, err := filter.Process(dstBuf, srcImage, nil)
 // Or process only a region of interest.
 roi := image.Rect(100, 100, 200, 200)
 outDims, err = filter.Process(dstBuf, srcImage, &roi)
+```
+
+### GPU Filters (WebGPU)
+
+```go
+import (
+	"github.com/cogentcore/webgpu/wgpu"
+	"github.com/soypat/pix/filters"
+)
+
+// Initialize WebGPU
+instance := wgpu.CreateInstance(nil)
+adapter, _ := instance.RequestAdapter(&wgpu.RequestAdapterOptions{
+	PowerPreference: wgpu.PowerPreferenceLowPower,
+})
+device, _ := adapter.RequestDevice(nil)
+queue := device.GetQueue()
+
+// Create GPU-accelerated grayscale filter
+filter, err := filters.NewGrayscaleGPU(device, queue, filters.GrayscaleLuminance)
+defer filter.Cleanup()
+
+// Process image.RGBA directly
+result, err := filter.Process(inputRGBA)
 ```
 
