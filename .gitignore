@@ -17,6 +17,8 @@ vendor/
 *.dylib
 *.hex
 
+**/testdata/*.png
+
 
 # `__debug_bin` Debug binary generated in VSCode when using the built-in debugger.
 **__debug_bin*
