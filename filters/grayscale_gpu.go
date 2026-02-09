@@ -9,11 +9,12 @@ import (
 
 const grayscaleTransform = `
 fn transform(c: vec4<f32>) -> vec4<f32> {
+    let mode = u1(0u);
     var gray: f32;
-    if (u.param0 < 0.5) {
+    if (mode < 0.5) {
         // Luminance (ITU-R BT.601)
         gray = 0.299 * c.r + 0.587 * c.g + 0.114 * c.b;
-    } else if (u.param0 < 1.5) {
+    } else if (mode < 1.5) {
         // Average
         gray = (c.r + c.g + c.b) / 3.0;
     } else {
@@ -27,14 +28,14 @@ fn transform(c: vec4<f32>) -> vec4<f32> {
 // GrayscaleFilterGPU converts images to grayscale using GPU compute.
 type GrayscaleFilterGPU struct {
 	PointFilterGPU
-	mode   GrayscaleMode
-	ctrls  []pix.Control
+	mode  GrayscaleMode
+	ctrls []pix.Control
 }
 
 // NewGrayscaleGPU creates a GPU-accelerated grayscale filter.
 func NewGrayscaleGPU(device *wgpu.Device, queue *wgpu.Queue, mode GrayscaleMode) (*GrayscaleFilterGPU, error) {
 	f := &GrayscaleFilterGPU{mode: mode}
-	if err := f.Init(device, queue, grayscaleTransform); err != nil {
+	if err := f.Init(device, queue, grayscaleTransform, 1); err != nil {
 		return nil, err
 	}
 	f.SetMode(mode)
@@ -56,7 +57,7 @@ func NewGrayscaleGPU(device *wgpu.Device, queue *wgpu.Queue, mode GrayscaleMode)
 // SetMode sets the grayscale conversion algorithm.
 func (f *GrayscaleFilterGPU) SetMode(mode GrayscaleMode) {
 	f.mode = mode
-	f.SetParam(0, float32(mode))
+	f.SetUniform1(0, float32(mode))
 }
 
 // Mode returns the current grayscale mode.

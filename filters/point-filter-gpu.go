@@ -4,6 +4,7 @@ import (
 	_ "embed"
 	"fmt"
 	"image"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -14,13 +15,20 @@ import (
 //go:embed point-filter-gpu.wgsl
 var baseShaderWGSL string
 
+// maxUniformFloats is the maximum number of float32 uniforms supported.
+// WebGPU guarantees at least 64KB for uniform buffers = 16384 float32s.
+const maxUniformFloats = 16384
+
 // PointFilterGPU applies a per-pixel GPU compute shader transformation.
 // Embed this in concrete filter implementations and provide a transform function in WGSL.
+//
+// Uniform layout: u[0].xy = (width, height), remaining floats are user-defined.
+// Shaders access uniforms as array<vec4<f32>, N> via the "u" binding.
 type PointFilterGPU struct {
-	mu     sync.Mutex
-	gpu    gpuResources
-	Params [4]float32 // Uniform params: [0]=width, [1]=height, [2..3]=user params
-	inited bool
+	mu       sync.Mutex
+	gpu      gpuResources
+	uniforms []float32 // [0]=width, [1]=height, rest=user params
+	inited   bool
 }
 
 type gpuResources struct {
@@ -37,20 +45,37 @@ type gpuResources struct {
 }
 
 // Init initializes GPU resources with the given transform WGSL code.
-// transformCode should define: fn transform(c: vec4<f32>) -> vec4<f32>
-func (f *PointFilterGPU) Init(device *wgpu.Device, queue *wgpu.Queue, transformCode string) error {
+// numUserUniforms is the number of user float32 uniforms (excluding width/height).
+// Pass 0 for filters with no parameters. Accessible in WGSL via u1(i) and u4(i).
+// transformCode should define: fn transform(c: vec4<f32>) -> vec4<f32>.
+func (f *PointFilterGPU) Init(device *wgpu.Device, queue *wgpu.Queue, transformCode string, numUserUniforms int) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	// Combine base shader with transform function
-	fullShader := strings.Replace(baseShaderWGSL, "// TRANSFORM_PLACEHOLDER", transformCode, 1)
+	if numUserUniforms < 0 {
+		numUserUniforms = 0
+	}
+	if numUserUniforms > maxUniformFloats-4 {
+		return fmt.Errorf("numUserUniforms %d exceeds maximum %d (64KB uniform buffer limit)", numUserUniforms, maxUniformFloats-4)
+	}
+
+	// 1 vec4 reserved for (width, height, _, _) + user data rounded up to vec4.
+	userVec4s := (numUserUniforms + 3) / 4
+	vec4Count := 1 + userVec4s
+	alignedFloats := vec4Count * 4
+
+	f.uniforms = make([]float32, alignedFloats)
+
+	// Build shader: replace vec4 count and insert transform code.
+	shader := strings.Replace(baseShaderWGSL, "UNIFORM_VEC4_COUNT", strconv.Itoa(vec4Count), 1)
+	shader = strings.Replace(shader, "// TRANSFORM_PLACEHOLDER", transformCode, 1)
 
 	f.gpu.device = device
 	f.gpu.queue = queue
 
 	var err error
 	f.gpu.shaderModule, err = device.CreateShaderModule(&wgpu.ShaderModuleDescriptor{
-		WGSLDescriptor: &wgpu.ShaderModuleWGSLDescriptor{Code: fullShader},
+		WGSLDescriptor: &wgpu.ShaderModuleWGSLDescriptor{Code: shader},
 	})
 	if err != nil {
 		return fmt.Errorf("shader module: %w", err)
@@ -69,7 +94,7 @@ func (f *PointFilterGPU) Init(device *wgpu.Device, queue *wgpu.Queue, transformC
 	f.gpu.bindLayout = f.gpu.pipeline.GetBindGroupLayout(0)
 
 	f.gpu.uniformBuffer, err = device.CreateBuffer(&wgpu.BufferDescriptor{
-		Size:  16, // 4 x float32
+		Size:  uint64(alignedFloats * 4),
 		Usage: wgpu.BufferUsageUniform | wgpu.BufferUsageCopyDst,
 	})
 	if err != nil {
@@ -78,6 +103,35 @@ func (f *PointFilterGPU) Init(device *wgpu.Device, queue *wgpu.Queue, transformC
 
 	f.inited = true
 	return nil
+}
+
+// SetUniforms writes user uniform data starting after the reserved vec4.
+// The data maps to u1(0), u1(1), ... in the shader.
+func (f *PointFilterGPU) SetUniforms(data []float32) {
+	f.mu.Lock()
+	copy(f.uniforms[4:], data)
+	f.mu.Unlock()
+}
+
+func (f *PointFilterGPU) SetUniform1(idx int, v float32) {
+	f.mu.Lock()
+	f.uniforms[idx+4] = v
+	f.mu.Unlock()
+}
+
+func (f *PointFilterGPU) SetUniform2(idx int, v [2]float32) {
+	f.mu.Lock()
+	f.uniforms[idx+4] = v[0]
+	f.uniforms[idx+5] = v[1]
+	f.mu.Unlock()
+}
+
+func (f *PointFilterGPU) SetUniform3(idx int, v [3]float32) {
+	f.mu.Lock()
+	f.uniforms[idx+4] = v[0]
+	f.uniforms[idx+5] = v[1]
+	f.uniforms[idx+6] = v[2]
+	f.mu.Unlock()
 }
 
 // Process applies the GPU filter to the input image.
@@ -97,9 +151,9 @@ func (f *PointFilterGPU) Process(img *image.RGBA) (*image.RGBA, error) {
 	// Upload image data
 	f.gpu.queue.WriteBuffer(f.gpu.inputBuffer, 0, img.Pix)
 
-	// Upload uniforms
-	f.Params[0], f.Params[1] = float32(w), float32(h)
-	f.gpu.queue.WriteBuffer(f.gpu.uniformBuffer, 0, wgpu.ToBytes(f.Params[:]))
+	// Upload uniforms (width/height always first two)
+	f.uniforms[0], f.uniforms[1] = float32(w), float32(h)
+	f.gpu.queue.WriteBuffer(f.gpu.uniformBuffer, 0, wgpu.ToBytes(f.uniforms))
 
 	// Dispatch compute shader
 	if err := f.dispatch(w, h); err != nil {
@@ -251,19 +305,6 @@ func (f *PointFilterGPU) Cleanup() {
 	}
 	f.inited = false
 }
-
-// SetParam sets a user parameter (index 0 or 1, mapped to Params[2] and Params[3]).
-func (f *PointFilterGPU) SetParam(index int, value float32) {
-	if index >= 0 && index < 2 {
-		f.mu.Lock()
-		f.Params[2+index] = value
-		f.mu.Unlock()
-	}
-}
-
-// Ensure PointFilterGPU doesn't accidentally implement Filter interface
-// since it uses image.RGBA instead of pix.Image.
-var _ interface{ Controls() []pix.Control } = (*PointFilterGPU)(nil)
 
 // Controls returns nil - concrete implementations should override.
 func (f *PointFilterGPU) Controls() []pix.Control { return nil }

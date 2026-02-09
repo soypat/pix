@@ -21,7 +21,7 @@ type InvertFilterGPU struct {
 // NewInvertGPU creates a GPU-accelerated color inversion filter.
 func NewInvertGPU(device *wgpu.Device, queue *wgpu.Queue) (*InvertFilterGPU, error) {
 	f := &InvertFilterGPU{}
-	if err := f.Init(device, queue, invertTransform); err != nil {
+	if err := f.Init(device, queue, invertTransform, 0); err != nil {
 		return nil, err
 	}
 	return f, nil

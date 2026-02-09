@@ -179,6 +179,116 @@ func TestGrayscaleGPUModes(t *testing.T) {
 	}
 }
 
+// TestGrayscaleGPUSetMode verifies that SetMode actually changes the conversion algorithm.
+// Different modes must produce different pixel values for non-neutral colors.
+func TestGrayscaleGPUSetMode(t *testing.T) {
+	device, queue, ok := initGPU(t)
+	if !ok {
+		return
+	}
+
+	// Use a known non-neutral color image where different grayscale algorithms
+	// produce different results. A solid red image is ideal:
+	// Luminance: 0.299*255 = 76, Average: 255/3 = 85, Lightness: (255+0)/2 = 128
+	const width, height = 16, 16
+	srcImg := image.NewRGBA(image.Rect(0, 0, width, height))
+	for i := 0; i < len(srcImg.Pix); i += 4 {
+		srcImg.Pix[i] = 255   // R
+		srcImg.Pix[i+1] = 0   // G
+		srcImg.Pix[i+2] = 0   // B
+		srcImg.Pix[i+3] = 255 // A
+	}
+
+	filter, err := NewGrayscaleGPU(device, queue, GrayscaleLuminance)
+	if err != nil {
+		t.Fatalf("NewGrayscaleGPU: %v", err)
+	}
+	defer filter.Cleanup()
+
+	// Process with luminance mode.
+	lumResult, err := filter.Process(srcImg)
+	if err != nil {
+		t.Fatalf("Process(luminance): %v", err)
+	}
+	lumGray := lumResult.Pix[0] // R channel of first pixel
+
+	// Switch to average mode and process again.
+	filter.SetMode(GrayscaleAverage)
+	avgResult, err := filter.Process(srcImg)
+	if err != nil {
+		t.Fatalf("Process(average): %v", err)
+	}
+	avgGray := avgResult.Pix[0]
+
+	// Switch to lightness mode and process again.
+	filter.SetMode(GrayscaleLightness)
+	lightResult, err := filter.Process(srcImg)
+	if err != nil {
+		t.Fatalf("Process(lightness): %v", err)
+	}
+	lightGray := lightResult.Pix[0]
+
+	// For pure red (255,0,0):
+	// Luminance:  round(0.299 * 255) ≈ 76
+	// Average:    round(255 / 3)     ≈ 85
+	// Lightness:  round((255+0) / 2) = 128
+	// All three must be different.
+	t.Logf("luminance=%d, average=%d, lightness=%d", lumGray, avgGray, lightGray)
+
+	if lumGray == avgGray {
+		t.Errorf("luminance and average produced same value %d; SetMode not working", lumGray)
+	}
+	if lumGray == lightGray {
+		t.Errorf("luminance and lightness produced same value %d; SetMode not working", lumGray)
+	}
+	if avgGray == lightGray {
+		t.Errorf("average and lightness produced same value %d; SetMode not working", avgGray)
+	}
+}
+
+// TestGrayscaleGPUModesDiffer verifies that constructing filters with different modes
+// produces distinct outputs. Catches bugs where the mode uniform is never uploaded.
+func TestGrayscaleGPUModesDiffer(t *testing.T) {
+	device, queue, ok := initGPU(t)
+	if !ok {
+		return
+	}
+
+	// Pure green: Luminance ≈ 150, Average = 85, Lightness = 128
+	const width, height = 8, 8
+	srcImg := image.NewRGBA(image.Rect(0, 0, width, height))
+	for i := 0; i < len(srcImg.Pix); i += 4 {
+		srcImg.Pix[i] = 0     // R
+		srcImg.Pix[i+1] = 255 // G
+		srcImg.Pix[i+2] = 0   // B
+		srcImg.Pix[i+3] = 255 // A
+	}
+
+	results := make(map[GrayscaleMode]uint8)
+	for _, mode := range []GrayscaleMode{GrayscaleLuminance, GrayscaleAverage, GrayscaleLightness} {
+		filter, err := NewGrayscaleGPU(device, queue, mode)
+		if err != nil {
+			t.Fatalf("NewGrayscaleGPU(%v): %v", mode, err)
+		}
+		result, err := filter.Process(srcImg)
+		filter.Cleanup()
+		if err != nil {
+			t.Fatalf("Process(%v): %v", mode, err)
+		}
+		results[mode] = result.Pix[0]
+	}
+
+	t.Logf("luminance=%d, average=%d, lightness=%d",
+		results[GrayscaleLuminance], results[GrayscaleAverage], results[GrayscaleLightness])
+
+	if results[GrayscaleLuminance] == results[GrayscaleAverage] {
+		t.Errorf("luminance and average produced same value %d; mode uniform not set at construction", results[GrayscaleLuminance])
+	}
+	if results[GrayscaleLuminance] == results[GrayscaleLightness] {
+		t.Errorf("luminance and lightness produced same value %d; mode uniform not set at construction", results[GrayscaleLuminance])
+	}
+}
+
 func TestInvertGPU(t *testing.T) {
 	device, queue, ok := initGPU(t)
 	if !ok {
