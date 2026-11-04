@@ -15,12 +15,7 @@ func TestToneCurve_IdentityPassthrough(t *testing.T) {
 	const width, height = 64, 64
 	srcImg := GenerateRandomSquaresRGBA(rng, width, height, 20, 5, 15)
 
-	dst := make([]byte, len(srcImg.Pix))
-	img := &rgbaImage{img: srcImg}
-	_, err := filter.Process(dst, img, nil)
-	if err != nil {
-		t.Fatalf("Process: %v", err)
-	}
+	dst := processRGBA(t, filter, srcImg)
 
 	for i := range dst {
 		if dst[i] != srcImg.Pix[i] {
@@ -47,12 +42,7 @@ func TestToneCurve_InvertViaCurve(t *testing.T) {
 		srcImg.Pix[i+3] = 255 // A
 	}
 
-	dst := make([]byte, len(srcImg.Pix))
-	img := &rgbaImage{img: srcImg}
-	_, err = filter.Process(dst, img, nil)
-	if err != nil {
-		t.Fatalf("Process: %v", err)
-	}
+	dst := processRGBA(t, filter, srcImg)
 
 	// Check first pixel. Linear interpolation of invert: output ≈ 255 - input (within rounding).
 	r, g, b, a := dst[0], dst[1], dst[2], dst[3]
@@ -89,12 +79,7 @@ func TestToneCurve_PerChannelIndependence(t *testing.T) {
 		srcImg.Pix[i+3] = 255
 	}
 
-	dst := make([]byte, len(srcImg.Pix))
-	img := &rgbaImage{img: srcImg}
-	_, err = filter.Process(dst, img, nil)
-	if err != nil {
-		t.Fatalf("Process: %v", err)
-	}
+	dst := processRGBA(t, filter, srcImg)
 
 	// Red should be maxed out, green and blue unchanged.
 	r, g, b := dst[0], dst[1], dst[2]
@@ -135,26 +120,24 @@ func TestToneCurve_ControlRoundtrip(t *testing.T) {
 	}
 }
 
-// rgbaImage wraps image.RGBA to implement pix.ImageBuffered.
-type rgbaImage struct {
-	img *image.RGBA
-}
-
-func (r *rgbaImage) Dims() pix.Dims {
-	b := r.img.Bounds()
-	return pix.Dims{
-		Width:  b.Dx(),
-		Height: b.Dy(),
-		Stride: r.img.Stride,
-		Shape:  pix.ShapeRGBA8888,
+// processRGBA prepares f for img, processes img into a new dense buffer and returns its bytes.
+func processRGBA(t *testing.T, f pix.Filter, img *image.RGBA) []byte {
+	t.Helper()
+	b := img.Bounds()
+	src, err := pix.MakeBuffer(pix.DenseDims(b.Dx(), b.Dy(), pix.ShapeRGBA8888), img.Pix)
+	if err != nil {
+		t.Fatalf("MakeBuffer(src): %v", err)
 	}
-}
-
-func (r *rgbaImage) ReadAt(p []byte, off int64) (n int, err error) {
-	n = copy(p, r.img.Pix[off:])
-	return n, nil
-}
-
-func (r *rgbaImage) Buffer() []byte {
-	return r.img.Pix
+	out, err := f.Prepare(src.Dims())
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	dst, err := pix.MakeBuffer(out, make([]byte, out.Size()))
+	if err != nil {
+		t.Fatalf("MakeBuffer(dst): %v", err)
+	}
+	if err := f.Process(&dst, &src); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	return dst.Buffer()
 }

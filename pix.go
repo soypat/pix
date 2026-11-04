@@ -38,17 +38,26 @@ type ImageBuffered interface {
 // implemented by having the filter store the additional images before calling process on a target image.
 type Filter interface {
 	// ShapeIO returns expected output and input [pixel.Shape] of the filter.
-	// output shape MUST match Process [Dims.Shape] output.
+	// output shape MUST match Process [Dims.Shape] output. Filters accepting several input
+	// shapes return the shapes of the last successful [Filter.Prepare].
 	ShapeIO() (output, input Shape)
-	// Process processes an input image and writes the result to
-	// destination buffer and returns the dimensions of the resulting image.
+	// Prepare readies the filter to process images of dimensions in and returns the
+	// dimensions of the output it will produce for them, with the minimum (dense) stride.
+	// It must be called before processing and again whenever the input dimensions, or
+	// parameters that change the output's dimensions or shape, change.
 	//
-	// If destination buffer is nil Filter will assert [ImageBuffered.Buffer] non-nilness
-	// and use the buffer as the destination data. In-place does not support ROI.
-	// Use [ValidateProcessArgs] to acquire dst buffer and validate arguments.
+	// Prepare may allocate scratch memory. Implementations grow scratch only, so calling
+	// Prepare again with dimensions no larger than before does not allocate.
+	Prepare(in Dims) (out Dims, err error)
+	// Process processes src into dst. src must have the dimensions given to the last
+	// [Filter.Prepare] and dst those it returned, except dst's Stride, which may be larger:
+	// rows aligned for GPU upload or views into larger images.
+	// dst and src must not overlap unless the filter documents in-place support.
 	//
-	// For sub-byte ROI alignment filter must implement bit-level extraction.
-	Process(dstOrNilForInPlace []byte, src Image, roi *image.Rectangle) (Dims, error)
+	// To process a region of interest pass a [Buffer.Sub] view of it as src, after preparing
+	// the filter for the view's dimensions. Filters see the view as the whole image, so
+	// neighbourhood filters apply their border rule at its edges (OpenCV's BORDER_ISOLATED).
+	Process(dst, src *Buffer) error
 	// Controls returns the actual controls of the filter.
 	// Controls should remain valid even after calling [Control.ChangeValue]
 	// and their [Control.ActualValue] return the updated value.
@@ -68,13 +77,59 @@ const (
 	ShapeRGB444BE                   // rgb444be
 	ShapeGrayscale2bit              // gray2
 	ShapeMonochrome                 // monochrome
+	// ShapeGray8 is a single 8-bit channel: grayscale images and masks (0 or 255).
+	ShapeGray8 // gray8
+	// ShapeLabA8888 is CIE L*a*b* in OpenCV's 8-bit encoding (L*255/100, a+128, b+128)
+	// followed by an alpha byte: the byte layout of [ShapeRGBA8888].
+	ShapeLabA8888 // laba8888
+	// ShapeHSVA8888 is HSV in OpenCV's 8-bit encoding (H as degrees/2 in 0..179, S and V in
+	// 0..255) followed by an alpha byte: the byte layout of [ShapeRGBA8888].
+	ShapeHSVA8888 // hsva8888
 )
+
+// String returns the shape's name.
+func (sh Shape) String() string {
+	switch sh {
+	case ShapeRGB888:
+		return "rgb888"
+	case ShapeRGBA8888:
+		return "rgba8888"
+	case ShapeRGB565BE:
+		return "rgb565be"
+	case ShapeRGB555:
+		return "rgb555"
+	case ShapeRGB444BE:
+		return "rgb444be"
+	case ShapeGrayscale2bit:
+		return "gray2"
+	case ShapeMonochrome:
+		return "monochrome"
+	case ShapeGray8:
+		return "gray8"
+	case ShapeLabA8888:
+		return "laba8888"
+	case ShapeHSVA8888:
+		return "hsva8888"
+	}
+	return "undefined"
+}
+
+// BytesPerPixel returns the number of bytes per pixel of shapes with whole-byte pixels, or 0.
+func (sh Shape) BytesPerPixel() int {
+	bits := sh.BitsPerPixel()
+	if bits <= 0 || bits%8 != 0 {
+		return 0
+	}
+	return bits / 8
+}
 
 func (sh Shape) BitsPerPixel() (bits int) {
 	switch sh {
 	default:
 		bits = -1
-	case ShapeRGBA8888:
+	case ShapeGray8:
+		bits = 8
+	case ShapeRGBA8888, ShapeLabA8888, ShapeHSVA8888:
 		bits = 32
 	case ShapeRGB888:
 		bits = 24
@@ -127,6 +182,89 @@ func (d Dims) SizeRow() int {
 	return (d.Width*d.Shape.BitsPerPixel() + 7) / 8
 }
 
+// Viewer is implemented by filters whose output, for their current parameters, may be a
+// region of their input: cropping, or identity parameters of a point filter. Callers holding
+// the input in memory then use a [Buffer.Sub] view as the output and skip processing,
+// copying nothing. ViewOf is called after [Filter.Prepare] with the same in.
+type Viewer interface {
+	// ViewOf returns the region of the input equal to the filter's output and ok true, if
+	// there is one for the current parameters.
+	ViewOf(in Dims) (r image.Rectangle, ok bool)
+}
+
+// Buffer is an in-memory image: rows of pixels Stride bytes apart from the start of its
+// data. It implements [ImageBuffered]. Sub-images share memory with their parent. Methods
+// have pointer receivers so a *Buffer passed as an [Image] does not allocate.
+type Buffer struct {
+	dims Dims
+	data []byte
+}
+
+// MakeBuffer returns a buffer over data, which must hold an image of dimensions d.
+func MakeBuffer(d Dims, data []byte) (Buffer, error) {
+	var b Buffer
+	err := b.Reset(d, data)
+	return b, err
+}
+
+// Reset makes b a buffer over data, which must hold an image of dimensions d.
+func (b *Buffer) Reset(d Dims, data []byte) error {
+	if err := d.Validate(); err != nil {
+		return err
+	} else if int64(len(data)) < d.Size() {
+		return io.ErrShortBuffer
+	}
+	b.dims = d
+	b.data = data[:d.Size()]
+	return nil
+}
+
+// Dims implements [Image].
+func (b *Buffer) Dims() Dims { return b.dims }
+
+// Buffer implements [ImageBuffered]: the image's bytes from its first pixel to the last
+// pixel of its last row.
+func (b *Buffer) Buffer() []byte { return b.data }
+
+// ReadAt implements [io.ReaderAt] over the bytes returned by [Buffer.Buffer].
+func (b *Buffer) ReadAt(p []byte, off int64) (int, error) {
+	if off < 0 {
+		return 0, errors.New("negative offset")
+	} else if off >= int64(len(b.data)) {
+		return 0, io.EOF
+	}
+	n := copy(p, b.data[off:])
+	if n < len(p) {
+		return n, io.EOF
+	}
+	return n, nil
+}
+
+// Row returns the bytes of the pixels of row y.
+func (b *Buffer) Row(y int) []byte {
+	off := y * b.dims.Stride
+	return b.data[off : off+b.dims.SizeRow()]
+}
+
+// Sub returns region r of b, which must lie within b's bounds, sharing b's memory. The
+// shape must have whole-byte pixels.
+func (b *Buffer) Sub(r image.Rectangle) (Buffer, error) {
+	bpp := b.dims.Shape.BytesPerPixel()
+	if bpp == 0 {
+		return Buffer{}, errors.New("sub-image of sub-byte pixel shape")
+	} else if r.Empty() || r.Min.X < 0 || r.Min.Y < 0 || r.Max.X > b.dims.Width || r.Max.Y > b.dims.Height {
+		return Buffer{}, errors.New("sub-image out of bounds")
+	}
+	d := Dims{Width: r.Dx(), Height: r.Dy(), Stride: b.dims.Stride, Shape: b.dims.Shape}
+	off := r.Min.Y*b.dims.Stride + r.Min.X*bpp
+	return Buffer{dims: d, data: b.data[off : off+int(d.Size())]}, nil
+}
+
+// DenseDims returns the dimensions of a w×h image of shape sh with no padding between rows.
+func DenseDims(w, h int, sh Shape) Dims {
+	return Dims{Width: w, Height: h, Shape: sh, Stride: (w*sh.BitsPerPixel() + 7) / 8}
+}
+
 func ImageRow(dst []byte, img Image, row int) (resultSized []byte, err error) {
 	d := img.Dims()
 	err = d.Validate()
@@ -154,58 +292,4 @@ func ImageRow(dst []byte, img Image, row int) (resultSized []byte, err error) {
 		return nil, io.ErrShortWrite
 	}
 	return resultSized, nil
-}
-
-// ValidateProcessArgs gets correct write destination buffer and
-// provides basic guarantees of inputs to Filter such as:
-//   - Source [Dims.Validate] early validation. Always returned as called.
-//   - Valid ROI argument.
-//   - Valid input image for buffered in-place operations. In-place rejects non-nil ROI.
-//   - shape match for in-place operations.
-//   - For users who know the output stride and height offers checking of dst buffer size.
-//     Use dstDims.Stride=0 to omit this check.
-//
-// dstDims.Shape must be set to support in-place operations. Other fields are optional but provide buffer size checks.
-// srcDims is always returned as called by src.Dims.
-func ValidateProcessArgs(dst []byte, dstShape Dims, src Image, roi *image.Rectangle) (_ []byte, srcDims Dims, err error) {
-	srcDims = src.Dims()
-	if err = srcDims.Validate(); err != nil {
-		return nil, srcDims, err
-	}
-	var requiredMinDstSize int64
-	if roi != nil {
-		if roi.Max.X < 0 || roi.Min.X < 0 || roi.Min.Y < 0 || roi.Max.Y < 0 {
-			return nil, srcDims, errors.New("negative ROI")
-		} else if roi.Max.X > srcDims.Width || roi.Max.Y > srcDims.Height {
-			return nil, srcDims, errors.New("ROI exceeds image bounds")
-		} else if roi.Empty() {
-			return nil, srcDims, errors.New("empty ROI")
-		}
-		requiredMinDstSize = int64(dstShape.Stride) * int64(roi.Dy())
-	} else {
-		requiredMinDstSize = int64(dstShape.Stride) * int64(dstShape.Height)
-	}
-	if dst == nil {
-		if roi != nil {
-			return nil, srcDims, errors.New("in-place operation does not support ROI")
-		}
-		if dstShape.Shape != srcDims.Shape {
-			return nil, srcDims, errors.New("src must match filter output shape for in-place op")
-		}
-		buffered, ok := src.(ImageBuffered)
-		if !ok {
-			return nil, srcDims, errors.New("src does not implement ImageBuffered for in-place op")
-		}
-		buf := buffered.Buffer()
-		if buf == nil {
-			return nil, srcDims, errors.New("src returned nil buffer on in-place op")
-		} else if len(buf) < int(srcDims.Size()) {
-			return nil, srcDims, errors.New("src ImageBuffered returned a buffer too small to represent complete image")
-		}
-		dst = buf
-	}
-	if int64(len(dst)) < requiredMinDstSize {
-		return dst, srcDims, errors.New("destination buffer not large enough to store output")
-	}
-	return dst, srcDims, nil
 }
