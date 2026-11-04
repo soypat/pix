@@ -1,7 +1,7 @@
 package gpu
 
 import (
-	"github.com/cogentcore/webgpu/wgpu"
+	"github.com/oliverbestmann/webgpu/wgpu"
 	"github.com/soypat/pix"
 	"github.com/soypat/pix/filters"
 )

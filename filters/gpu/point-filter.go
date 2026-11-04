@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/cogentcore/webgpu/wgpu"
+	"github.com/oliverbestmann/webgpu/wgpu"
 	"github.com/soypat/pix"
 )
 
@@ -74,14 +74,14 @@ func (f *PointFilterGPU) Init(device *wgpu.Device, queue *wgpu.Queue, transformC
 	f.gpu.queue = queue
 
 	var err error
-	f.gpu.shaderModule, err = device.CreateShaderModule(&wgpu.ShaderModuleDescriptor{
-		WGSLDescriptor: &wgpu.ShaderModuleWGSLDescriptor{Code: shader},
+	f.gpu.shaderModule, err = device.TryCreateShaderModule(&wgpu.ShaderModuleDescriptor{
+		WGSLSource: &wgpu.ShaderSourceWGSL{Code: shader},
 	})
 	if err != nil {
 		return fmt.Errorf("shader module: %w", err)
 	}
 
-	f.gpu.pipeline, err = device.CreateComputePipeline(&wgpu.ComputePipelineDescriptor{
+	f.gpu.pipeline, err = device.TryCreateComputePipeline(&wgpu.ComputePipelineDescriptor{
 		Compute: wgpu.ProgrammableStageDescriptor{
 			Module:     f.gpu.shaderModule,
 			EntryPoint: "main",
@@ -93,7 +93,7 @@ func (f *PointFilterGPU) Init(device *wgpu.Device, queue *wgpu.Queue, transformC
 
 	f.gpu.bindLayout = f.gpu.pipeline.GetBindGroupLayout(0)
 
-	f.gpu.uniformBuffer, err = device.CreateBuffer(&wgpu.BufferDescriptor{
+	f.gpu.uniformBuffer, err = device.TryCreateBuffer(&wgpu.BufferDescriptor{
 		Size:  uint64(alignedFloats * 4),
 		Usage: wgpu.BufferUsageUniform | wgpu.BufferUsageCopyDst,
 	})
@@ -149,11 +149,15 @@ func (f *PointFilterGPU) Process(img *image.RGBA) (*image.RGBA, error) {
 	}
 
 	// Upload image data
-	f.gpu.queue.WriteBuffer(f.gpu.inputBuffer, 0, img.Pix)
+	if err := f.gpu.queue.TryWriteBuffer(f.gpu.inputBuffer, 0, img.Pix); err != nil {
+		return nil, fmt.Errorf("write input: %w", err)
+	}
 
 	// Upload uniforms (width/height always first two)
 	f.uniforms[0], f.uniforms[1] = float32(w), float32(h)
-	f.gpu.queue.WriteBuffer(f.gpu.uniformBuffer, 0, wgpu.ToBytes(f.uniforms))
+	if err := f.gpu.queue.TryWriteBuffer(f.gpu.uniformBuffer, 0, wgpu.ToBytes(f.uniforms)); err != nil {
+		return nil, fmt.Errorf("write uniforms: %w", err)
+	}
 
 	// Dispatch compute shader
 	if err := f.dispatch(w, h); err != nil {
@@ -178,7 +182,7 @@ func (f *PointFilterGPU) ensureBuffers(w, h int) error {
 	size := uint64(w * h * 4)
 	var err error
 
-	f.gpu.inputBuffer, err = f.gpu.device.CreateBuffer(&wgpu.BufferDescriptor{
+	f.gpu.inputBuffer, err = f.gpu.device.TryCreateBuffer(&wgpu.BufferDescriptor{
 		Size:  size,
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst,
 	})
@@ -186,7 +190,7 @@ func (f *PointFilterGPU) ensureBuffers(w, h int) error {
 		return fmt.Errorf("input buffer: %w", err)
 	}
 
-	f.gpu.outputBuffer, err = f.gpu.device.CreateBuffer(&wgpu.BufferDescriptor{
+	f.gpu.outputBuffer, err = f.gpu.device.TryCreateBuffer(&wgpu.BufferDescriptor{
 		Size:  size,
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopySrc,
 	})
@@ -200,7 +204,7 @@ func (f *PointFilterGPU) ensureBuffers(w, h int) error {
 }
 
 func (f *PointFilterGPU) dispatch(w, h int) error {
-	bindGroup, err := f.gpu.device.CreateBindGroup(&wgpu.BindGroupDescriptor{
+	bindGroup, err := f.gpu.device.TryCreateBindGroup(&wgpu.BindGroupDescriptor{
 		Layout: f.gpu.bindLayout,
 		Entries: []wgpu.BindGroupEntry{
 			{Binding: 0, Buffer: f.gpu.uniformBuffer, Size: wgpu.WholeSize},
@@ -213,7 +217,7 @@ func (f *PointFilterGPU) dispatch(w, h int) error {
 	}
 	defer bindGroup.Release()
 
-	encoder, err := f.gpu.device.CreateCommandEncoder(nil)
+	encoder, err := f.gpu.device.TryCreateCommandEncoder(nil)
 	if err != nil {
 		return fmt.Errorf("command encoder: %w", err)
 	}
@@ -223,13 +227,17 @@ func (f *PointFilterGPU) dispatch(w, h int) error {
 	pass.SetPipeline(f.gpu.pipeline)
 	pass.SetBindGroup(0, bindGroup, nil)
 	pass.DispatchWorkgroups(uint32((w+7)/8), uint32((h+7)/8), 1)
-	pass.End()
+	err = pass.TryEnd()
 	pass.Release()
+	if err != nil {
+		return fmt.Errorf("end compute pass: %w", err)
+	}
 
-	cmd, err := encoder.Finish(nil)
+	cmd, err := encoder.TryFinish(nil)
 	if err != nil {
 		return fmt.Errorf("finish: %w", err)
 	}
+	defer cmd.Release()
 
 	f.gpu.queue.Submit(cmd)
 	return nil
@@ -238,7 +246,7 @@ func (f *PointFilterGPU) dispatch(w, h int) error {
 func (f *PointFilterGPU) readback() error {
 	size := uint64(f.gpu.width * f.gpu.height * 4)
 
-	staging, err := f.gpu.device.CreateBuffer(&wgpu.BufferDescriptor{
+	staging, err := f.gpu.device.TryCreateBuffer(&wgpu.BufferDescriptor{
 		Size:  size,
 		Usage: wgpu.BufferUsageMapRead | wgpu.BufferUsageCopyDst,
 	})
@@ -247,22 +255,34 @@ func (f *PointFilterGPU) readback() error {
 	}
 	defer staging.Release()
 
-	encoder, _ := f.gpu.device.CreateCommandEncoder(nil)
-	encoder.CopyBufferToBuffer(f.gpu.outputBuffer, 0, staging, 0, size)
-	cmd, _ := encoder.Finish(nil)
-	encoder.Release()
+	encoder, err := f.gpu.device.TryCreateCommandEncoder(nil)
+	if err != nil {
+		return fmt.Errorf("readback encoder: %w", err)
+	}
+	defer encoder.Release()
+	if err := encoder.TryCopyBufferToBuffer(f.gpu.outputBuffer, 0, staging, 0, size); err != nil {
+		return fmt.Errorf("copy to staging: %w", err)
+	}
+	cmd, err := encoder.TryFinish(nil)
+	if err != nil {
+		return fmt.Errorf("readback finish: %w", err)
+	}
+	defer cmd.Release()
 
 	f.gpu.queue.Submit(cmd)
 	f.gpu.device.Poll(true, nil)
 
 	done := make(chan error, 1)
-	staging.MapAsync(wgpu.MapModeRead, 0, size, func(status wgpu.BufferMapAsyncStatus) {
-		if status != wgpu.BufferMapAsyncStatusSuccess {
+	err = staging.TryMapAsync(wgpu.MapModeRead, 0, size, func(status wgpu.MapAsyncStatus) {
+		if status != wgpu.MapAsyncStatusSuccess {
 			done <- fmt.Errorf("map failed: %v", status)
 			return
 		}
 		done <- nil
 	})
+	if err != nil {
+		return fmt.Errorf("map staging: %w", err)
+	}
 
 	f.gpu.device.Poll(true, nil)
 	if err := <-done; err != nil {
@@ -270,8 +290,7 @@ func (f *PointFilterGPU) readback() error {
 	}
 
 	copy(f.gpu.outputImage.Pix, staging.GetMappedRange(0, uint(size)))
-	staging.Unmap()
-	return nil
+	return staging.TryUnmap()
 }
 
 func (f *PointFilterGPU) releaseImageBuffers() {
