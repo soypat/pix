@@ -1,4 +1,4 @@
-package filters
+package gpu
 
 import (
 	"image"
@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/cogentcore/webgpu/wgpu"
+	"github.com/soypat/pix/filters"
 )
 
 // GenerateRandomSquaresRGBA creates an RGBA image with random colored squares on a black background.
@@ -105,7 +106,7 @@ func TestGrayscaleGPU(t *testing.T) {
 		t.Logf("failed to save input: %v", err)
 	}
 
-	filter, err := NewGrayscaleGPU(device, queue, GrayscaleLuminance)
+	filter, err := NewGrayscaleGPU(device, queue, filters.GrayscaleLuminance)
 	if err != nil {
 		t.Fatalf("NewGrayscaleGPU: %v", err)
 	}
@@ -149,12 +150,12 @@ func TestGrayscaleGPUModes(t *testing.T) {
 	}
 
 	modes := []struct {
-		mode GrayscaleMode
+		mode filters.GrayscaleMode
 		name string
 	}{
-		{GrayscaleLuminance, "luminance"},
-		{GrayscaleAverage, "average"},
-		{GrayscaleLightness, "lightness"},
+		{filters.GrayscaleLuminance, "luminance"},
+		{filters.GrayscaleAverage, "average"},
+		{filters.GrayscaleLightness, "lightness"},
 	}
 
 	for _, m := range modes {
@@ -199,7 +200,7 @@ func TestGrayscaleGPUSetMode(t *testing.T) {
 		srcImg.Pix[i+3] = 255 // A
 	}
 
-	filter, err := NewGrayscaleGPU(device, queue, GrayscaleLuminance)
+	filter, err := NewGrayscaleGPU(device, queue, filters.GrayscaleLuminance)
 	if err != nil {
 		t.Fatalf("NewGrayscaleGPU: %v", err)
 	}
@@ -213,7 +214,7 @@ func TestGrayscaleGPUSetMode(t *testing.T) {
 	lumGray := lumResult.Pix[0] // R channel of first pixel
 
 	// Switch to average mode and process again.
-	filter.SetMode(GrayscaleAverage)
+	filter.SetMode(filters.GrayscaleAverage)
 	avgResult, err := filter.Process(srcImg)
 	if err != nil {
 		t.Fatalf("Process(average): %v", err)
@@ -221,7 +222,7 @@ func TestGrayscaleGPUSetMode(t *testing.T) {
 	avgGray := avgResult.Pix[0]
 
 	// Switch to lightness mode and process again.
-	filter.SetMode(GrayscaleLightness)
+	filter.SetMode(filters.GrayscaleLightness)
 	lightResult, err := filter.Process(srcImg)
 	if err != nil {
 		t.Fatalf("Process(lightness): %v", err)
@@ -264,8 +265,8 @@ func TestGrayscaleGPUModesDiffer(t *testing.T) {
 		srcImg.Pix[i+3] = 255 // A
 	}
 
-	results := make(map[GrayscaleMode]uint8)
-	for _, mode := range []GrayscaleMode{GrayscaleLuminance, GrayscaleAverage, GrayscaleLightness} {
+	results := make(map[filters.GrayscaleMode]uint8)
+	for _, mode := range []filters.GrayscaleMode{filters.GrayscaleLuminance, filters.GrayscaleAverage, filters.GrayscaleLightness} {
 		filter, err := NewGrayscaleGPU(device, queue, mode)
 		if err != nil {
 			t.Fatalf("NewGrayscaleGPU(%v): %v", mode, err)
@@ -279,13 +280,13 @@ func TestGrayscaleGPUModesDiffer(t *testing.T) {
 	}
 
 	t.Logf("luminance=%d, average=%d, lightness=%d",
-		results[GrayscaleLuminance], results[GrayscaleAverage], results[GrayscaleLightness])
+		results[filters.GrayscaleLuminance], results[filters.GrayscaleAverage], results[filters.GrayscaleLightness])
 
-	if results[GrayscaleLuminance] == results[GrayscaleAverage] {
-		t.Errorf("luminance and average produced same value %d; mode uniform not set at construction", results[GrayscaleLuminance])
+	if results[filters.GrayscaleLuminance] == results[filters.GrayscaleAverage] {
+		t.Errorf("luminance and average produced same value %d; mode uniform not set at construction", results[filters.GrayscaleLuminance])
 	}
-	if results[GrayscaleLuminance] == results[GrayscaleLightness] {
-		t.Errorf("luminance and lightness produced same value %d; mode uniform not set at construction", results[GrayscaleLuminance])
+	if results[filters.GrayscaleLuminance] == results[filters.GrayscaleLightness] {
+		t.Errorf("luminance and lightness produced same value %d; mode uniform not set at construction", results[filters.GrayscaleLuminance])
 	}
 }
 

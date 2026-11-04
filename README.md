@@ -21,9 +21,11 @@ Credit to Amken3D GPU approach to filtering.
 ## Module structure
 - `pix.go` - Contains top level interface abstractions.
 - `controls.go` - `Control` type and implementations.
-- `filters` - Directory containing image filter implementations.
-    - `filters/point-filter.go` - Most basic CPU filter implementation- pixel-by-pixel image transformation. `grayscale.go` and `invert.go` use this filter base
-    - `filters/point-filter-gpu.go` - GPU-accelerated filter base using WebGPU compute shaders. `grayscale_gpu.go` and `invert_gpu.go` use this base
+- `filters` - Directory containing CPU image filter implementations. Pure Go, no GPU dependencies.
+    - `filters/point-filter.go` - Most basic CPU filter implementation- pixel-by-pixel image transformation. `grayscale.go`, `invert.go` and `tonecurve.go` use this filter base
+- `filters/gpu` - Separate module (`github.com/soypat/pix/filters/gpu`) with GPU-accelerated filters using [cogentcore/webgpu](https://github.com/cogentcore/webgpu) compute shaders.
+    - `filters/gpu/point-filter.go` - GPU filter base. `grayscale.go`, `invert.go` and `tonecurve.go` use this base
+    - Kept in its own module so importing `pix` or `pix/filters` never links a wgpu binding. Programs using another wgpu binding (e.g. Cogent Core's `oliverbestmann/webgpu`) cannot also link `filters/gpu`: both export the same cgo symbols.
 
 ## Examples
 
@@ -53,6 +55,7 @@ outDims, err = filter.Process(dstBuf, srcImage, &roi)
 import (
 	"github.com/cogentcore/webgpu/wgpu"
 	"github.com/soypat/pix/filters"
+	"github.com/soypat/pix/filters/gpu"
 )
 
 // Initialize WebGPU
@@ -64,7 +67,7 @@ device, _ := adapter.RequestDevice(nil)
 queue := device.GetQueue()
 
 // Create GPU-accelerated grayscale filter
-filter, err := filters.NewGrayscaleGPU(device, queue, filters.GrayscaleLuminance)
+filter, err := gpu.NewGrayscaleGPU(device, queue, filters.GrayscaleLuminance)
 defer filter.Cleanup()
 
 // Process image.RGBA directly

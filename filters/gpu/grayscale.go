@@ -1,10 +1,11 @@
-package filters
+package gpu
 
 import (
 	"image"
 
 	"github.com/cogentcore/webgpu/wgpu"
 	"github.com/soypat/pix"
+	"github.com/soypat/pix/filters"
 )
 
 const grayscaleTransform = `
@@ -28,24 +29,24 @@ fn transform(c: vec4<f32>) -> vec4<f32> {
 // GrayscaleFilterGPU converts images to grayscale using GPU compute.
 type GrayscaleFilterGPU struct {
 	PointFilterGPU
-	mode  GrayscaleMode
+	mode  filters.GrayscaleMode
 	ctrls []pix.Control
 }
 
 // NewGrayscaleGPU creates a GPU-accelerated grayscale filter.
-func NewGrayscaleGPU(device *wgpu.Device, queue *wgpu.Queue, mode GrayscaleMode) (*GrayscaleFilterGPU, error) {
+func NewGrayscaleGPU(device *wgpu.Device, queue *wgpu.Queue, mode filters.GrayscaleMode) (*GrayscaleFilterGPU, error) {
 	f := &GrayscaleFilterGPU{mode: mode}
 	if err := f.Init(device, queue, grayscaleTransform, 1); err != nil {
 		return nil, err
 	}
 	f.SetMode(mode)
 	f.ctrls = []pix.Control{
-		&pix.ControlEnum[GrayscaleMode]{
+		&pix.ControlEnum[filters.GrayscaleMode]{
 			Name:        "Conversion Mode",
 			Description: "Algorithm for RGB to grayscale conversion",
 			Value:       mode,
-			ValidValues: []GrayscaleMode{GrayscaleLuminance, GrayscaleAverage, GrayscaleLightness},
-			OnChange: func(m GrayscaleMode) error {
+			ValidValues: []filters.GrayscaleMode{filters.GrayscaleLuminance, filters.GrayscaleAverage, filters.GrayscaleLightness},
+			OnChange: func(m filters.GrayscaleMode) error {
 				f.SetMode(m)
 				return nil
 			},
@@ -55,13 +56,13 @@ func NewGrayscaleGPU(device *wgpu.Device, queue *wgpu.Queue, mode GrayscaleMode)
 }
 
 // SetMode sets the grayscale conversion algorithm.
-func (f *GrayscaleFilterGPU) SetMode(mode GrayscaleMode) {
+func (f *GrayscaleFilterGPU) SetMode(mode filters.GrayscaleMode) {
 	f.mode = mode
 	f.SetUniform1(0, float32(mode))
 }
 
 // Mode returns the current grayscale mode.
-func (f *GrayscaleFilterGPU) Mode() GrayscaleMode {
+func (f *GrayscaleFilterGPU) Mode() filters.GrayscaleMode {
 	return f.mode
 }
 

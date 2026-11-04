@@ -1,4 +1,4 @@
-package filters
+package gpu
 
 import (
 	_ "embed"
@@ -12,7 +12,7 @@ import (
 	"github.com/soypat/pix"
 )
 
-//go:embed point-filter-gpu.wgsl
+//go:embed point-filter.wgsl
 var baseShaderWGSL string
 
 // maxUniformFloats is the maximum number of float32 uniforms supported.
