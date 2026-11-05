@@ -1,0 +1,4 @@
+github.com/chewxy/math32 v1.11.1 h1:b7PGHlp8KjylDoU8RrcEsRuGZhJuz8haxnKfuMMRqy8=
+github.com/chewxy/math32 v1.11.1/go.mod h1:dOB2rcuFrCn6UHrze36WSLVPKtzPMRAQvBvUwkSsLqs=
+github.com/soypat/geometry v0.0.0-20251107203642-291c5648d529 h1:b+KprI7Gk38IeRGgV94xIuCyARhdXTGU2WioxmLEjbw=
+github.com/soypat/geometry v0.0.0-20251107203642-291c5648d529/go.mod h1:ks6uGIIvsbkaGB7RBLG8pc2yHYBIxZ1FSRSNPtXPAwY=

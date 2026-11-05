@@ -1,5 +1,4 @@
 # Go workspaces.
-go.sum
 go.work
 go.work.sum
 # Test binary, built with `go test -c`
