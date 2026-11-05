@@ -46,6 +46,8 @@ func (f *PointFilter) Process(dst, src *pix.Buffer) error {
 	sd, dd := src.Dims(), dst.Dims()
 	if sd.Shape != f.In || dd.Shape != f.Out || sd.Width != dd.Width || sd.Height != dd.Height {
 		return errShapeMismatch
+	} else if dst.Overlaps(src) && !dst.SameMemory(src) {
+		return pix.ErrAliased
 	}
 	for y := 0; y < sd.Height; y++ {
 		f.Fn(dst.Row(y), src.Row(y))

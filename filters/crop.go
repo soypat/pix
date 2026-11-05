@@ -73,8 +73,12 @@ func (c *Crop) Prepare(in pix.Dims) (pix.Dims, error) {
 // ViewOf implements [pix.Viewer].
 func (c *Crop) ViewOf(in pix.Dims) (image.Rectangle, bool) { return c.r, !c.r.Empty() }
 
-// Process implements [pix.Filter], copying the region.
+// Process implements [pix.Filter], copying the region. dst may be the region's view of src,
+// in which case nothing is copied.
 func (c *Crop) Process(dst, src *pix.Buffer) error {
+	if c.viewing(dst, src, c.r) {
+		return nil
+	}
 	if err := c.check(dst, src); err != nil {
 		return err
 	}

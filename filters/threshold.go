@@ -61,7 +61,7 @@ func (f *Threshold) Prepare(in pix.Dims) (pix.Dims, error) {
 
 // Process implements [pix.Filter]. dst may be src.
 func (f *Threshold) Process(dst, src *pix.Buffer) error {
-	if err := f.check(dst, src); err != nil {
+	if err := f.checkInPlace(dst, src); err != nil {
 		return err
 	}
 	applyLUT(dst, src, &f.lut, 3)
@@ -141,9 +141,9 @@ func (f *InRange) Prepare(in pix.Dims) (pix.Dims, error) {
 	return f.out, nil
 }
 
-// Process implements [pix.Filter].
+// Process implements [pix.Filter]. dst may be src.
 func (f *InRange) Process(dst, src *pix.Buffer) error {
-	if err := f.check(dst, src); err != nil {
+	if err := f.checkInPlace(dst, src); err != nil {
 		return err
 	}
 	t0, t1, t2 := &f.in3[0], &f.in3[1], &f.in3[2]

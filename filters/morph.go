@@ -96,9 +96,12 @@ func (f *Morphology) ViewOf(in pix.Dims) (image.Rectangle, bool) {
 	return image.Rect(0, 0, in.Width, in.Height), f.EffectiveSize() == 1
 }
 
-// Process implements [pix.Filter].
+// Process implements [pix.Filter]. dst may be src.
 func (f *Morphology) Process(dst, src *pix.Buffer) error {
-	if err := f.check(dst, src); err != nil {
+	if r, ok := f.ViewOf(f.in); ok && f.viewing(dst, src, r) {
+		return nil
+	}
+	if err := f.checkInPlace(dst, src); err != nil {
 		return err
 	}
 	f.scratch() // Kernel size may have changed since Prepare; no-op when it did not grow.

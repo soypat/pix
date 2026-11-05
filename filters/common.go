@@ -2,6 +2,7 @@ package filters
 
 import (
 	"errors"
+	"image"
 	"math"
 
 	"github.com/soypat/pix"
@@ -18,9 +19,29 @@ type prepared struct {
 	in, out pix.Dims
 }
 
-// check verifies dst and src against the prepared dimensions: same size and shape, dst
-// stride at least the dense stride.
+// check verifies dst and src against the prepared dimensions (same size and shape, dst
+// stride at least the dense stride) and that they do not overlap.
 func (p *prepared) check(dst, src *pix.Buffer) error {
+	if err := p.checkDims(dst, src); err != nil {
+		return err
+	} else if dst.Overlaps(src) {
+		return pix.ErrAliased
+	}
+	return nil
+}
+
+// checkInPlace is check for filters working in place: dst may be src, but must not overlap
+// it otherwise.
+func (p *prepared) checkInPlace(dst, src *pix.Buffer) error {
+	if err := p.checkDims(dst, src); err != nil {
+		return err
+	} else if dst.Overlaps(src) && !dst.SameMemory(src) {
+		return pix.ErrAliased
+	}
+	return nil
+}
+
+func (p *prepared) checkDims(dst, src *pix.Buffer) error {
 	sd, dd := src.Dims(), dst.Dims()
 	if p.in.Shape == 0 || sd.Width != p.in.Width || sd.Height != p.in.Height || sd.Shape != p.in.Shape {
 		return errNotPrepared
@@ -29,6 +50,17 @@ func (p *prepared) check(dst, src *pix.Buffer) error {
 		return errNotPrepared
 	}
 	return nil
+}
+
+// viewing reports whether dst is region r of src, src having the prepared dimensions: the
+// output of a [pix.Viewer] already in place, so Process has nothing to write.
+func (p *prepared) viewing(dst, src *pix.Buffer, r image.Rectangle) bool {
+	sd := src.Dims()
+	if sd.Width != p.in.Width || sd.Height != p.in.Height || sd.Shape != p.in.Shape {
+		return false
+	}
+	v, err := src.Sub(r)
+	return err == nil && dst.Dims().Shape == sd.Shape && dst.SameMemory(&v)
 }
 
 // isGrayOrRGBA reports whether sh is a shape most point filters accept.

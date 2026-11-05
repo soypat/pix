@@ -620,3 +620,107 @@ func TestFiltersDoNotAllocate(t *testing.T) {
 		t.Errorf("labeler: %v allocs per run", allocs)
 	}
 }
+
+// TestAliasing checks every filter's overlap rule: processing in place gives the same output
+// as processing into a separate buffer for filters documenting in-place support, and
+// ErrAliased for the others; any other overlap gives ErrAliased.
+func TestAliasing(t *testing.T) {
+	const w, h = 48, 36
+	noise := func(b *pix.Buffer) { synth.Noise(b, 3) }
+	binary := func(b *pix.Buffer) { synth.Binary(b, 4, 0.4) }
+	cases := []struct {
+		name    string
+		f       pix.Filter
+		sh      pix.Shape
+		fill    func(*pix.Buffer)
+		inPlace bool
+	}{
+		{"crop", NewCrop(3, 4, 20, 10), pix.ShapeRGBA8888, noise, false},
+		{"scaleabs", NewScaleAbs(1.5, -20), pix.ShapeRGBA8888, noise, true},
+		{"threshold", NewThreshold(100, false), pix.ShapeGray8, noise, true},
+		{"inrange gray", NewInRange([3]uint8{50}, [3]uint8{150}), pix.ShapeGray8, noise, true},
+		{"inrange rgba", NewInRange([3]uint8{1, 2, 3}, [3]uint8{200, 200, 200}), pix.ShapeRGBA8888, noise, false},
+		{"lab", NewColorConvert(RGBAToLab), pix.ShapeRGBA8888, noise, true},
+		{"rgb", NewColorConvert(LabToRGBA), pix.ShapeLabA8888, noise, true},
+		{"hsv", NewColorConvert(RGBAToHSV), pix.ShapeRGBA8888, noise, true},
+		{"gray", NewColorConvert(RGBAToGray), pix.ShapeRGBA8888, noise, false},
+		{"channel", NewChannel(1), pix.ShapeRGBA8888, noise, false},
+		{"blur rgba", NewGaussianBlur(7, 0), pix.ShapeRGBA8888, noise, true},
+		{"blur gray", NewGaussianBlur(17, 0), pix.ShapeGray8, noise, true},
+		{"erode", NewMorphology(Erode, 5, 2), pix.ShapeGray8, binary, true},
+		{"close", NewMorphology(Close, 9, 1), pix.ShapeGray8, binary, true},
+		{"open rgba", NewMorphology(Open, 3, 1), pix.ShapeRGBA8888, noise, true},
+		{"clahe", NewCLAHE(2, 8), pix.ShapeGray8, noise, true},
+		{"clahe padded", NewCLAHE(2, 5), pix.ShapeGray8, noise, true},
+		{"tonecurve", NewToneCurve(), pix.ShapeRGBA8888, noise, true},
+		{"invert", NewInvertedPerPixel(), pix.ShapeRGB888, noise, true},
+	}
+	for _, c := range cases {
+		// The source is the top of a buffer one row taller, so a destination can start one row
+		// into it and still fit.
+		big := synth.New(w, h+1, c.sh, 64)
+		src, err := big.Sub(image.Rect(0, 0, w, h))
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.fill(&src)
+		want := run(t, c.f, &src) // Separate output; also prepares f.
+		out := want.Dims()
+		stride := src.Dims().Stride
+		over := func(data []byte) *pix.Buffer {
+			b, err := pix.MakeBuffer(pix.Dims{Width: out.Width, Height: out.Height, Stride: stride, Shape: out.Shape}, data)
+			if err != nil {
+				t.Fatal(c.name, err)
+			}
+			return &b
+		}
+		// Shifted by a row: overlapping but not the same pixels, never supported.
+		if err := c.f.Process(over(big.Buffer()[stride:]), &src); err != pix.ErrAliased {
+			t.Errorf("%s: shifted overlap gave %v, want ErrAliased", c.name, err)
+		}
+		// Same first byte: in place when the output has the input's pixel size.
+		dst := over(src.Buffer())
+		err = c.f.Process(dst, &src)
+		switch {
+		case !c.inPlace && err != pix.ErrAliased:
+			t.Errorf("%s: in place gave %v, want ErrAliased", c.name, err)
+		case c.inPlace && err != nil:
+			t.Errorf("%s: in place: %v", c.name, err)
+		case c.inPlace && !synth.Equal(dst, want):
+			t.Errorf("%s: in place output differs from separate output", c.name)
+		}
+	}
+}
+
+// TestViewersWriteNothing checks that Viewer filters at identity parameters accept their view
+// of src as dst, leave it unchanged and do not allocate.
+func TestViewersWriteNothing(t *testing.T) {
+	src := synth.New(40, 30, pix.ShapeRGBA8888, 64)
+	synth.Noise(src, 5)
+	before := synth.New(40, 30, pix.ShapeRGBA8888, 64)
+	copy(before.Buffer(), src.Buffer())
+	for _, f := range []pix.Filter{NewCrop(3, 4, 20, 10), NewScaleAbs(1, 0), NewGaussianBlur(1, 0), NewMorphology(Dilate, 1, 3)} {
+		if _, err := f.Prepare(src.Dims()); err != nil {
+			t.Fatal(err)
+		}
+		r, ok := f.(pix.Viewer).ViewOf(src.Dims())
+		if !ok {
+			t.Fatalf("%T: not a view at identity parameters", f)
+		}
+		view, err := src.Sub(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		allocs := testing.AllocsPerRun(3, func() {
+			if err := f.Process(&view, src); err != nil {
+				t.Fatalf("%T: %v", f, err)
+			}
+		})
+		if allocs != 0 {
+			t.Errorf("%T: %v allocs processing a view", f, allocs)
+		}
+		if !synth.Equal(src, before) {
+			t.Fatalf("%T: processing its view changed the image", f)
+		}
+	}
+}

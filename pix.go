@@ -4,7 +4,12 @@ import (
 	"errors"
 	"image"
 	"io"
+	"unsafe"
 )
+
+// ErrAliased is returned by [Filter.Process] when dst and src share memory in a way the
+// filter does not support. Callers may retry with separate buffers.
+var ErrAliased = errors.New("pix: dst and src overlap")
 
 // Image is a low-level, whole-buffer image access abstraction of raw memory.
 // It does not do bounds abstraction. As made implicit by Dims signature, row spacing must be homogenous in images.
@@ -52,7 +57,11 @@ type Filter interface {
 	// Process processes src into dst. src must have the dimensions given to the last
 	// [Filter.Prepare] and dst those it returned, except dst's Stride, which may be larger:
 	// rows aligned for GPU upload or views into larger images.
-	// dst and src must not overlap unless the filter documents in-place support.
+	//
+	// dst may be src itself ([Buffer.SameMemory]) only for filters documenting in-place
+	// support, and must not otherwise overlap it ([Buffer.Overlaps]): filters return
+	// [ErrAliased] for overlaps they do not support. [Viewer] filters also accept dst equal to
+	// the view of src they report, and then write nothing.
 	//
 	// To process a region of interest pass a [Buffer.Sub] view of it as src, after preparing
 	// the filter for the view's dimensions. Filters see the view as the whole image, so
@@ -184,8 +193,13 @@ func (d Dims) SizeRow() int {
 
 // Viewer is implemented by filters whose output, for their current parameters, may be a
 // region of their input: cropping, or identity parameters of a point filter. Callers holding
-// the input in memory then use a [Buffer.Sub] view as the output and skip processing,
-// copying nothing. ViewOf is called after [Filter.Prepare] with the same in.
+// the input in memory then use the [Buffer.Sub] view as the output, copying nothing.
+// ViewOf is called after [Filter.Prepare] with the same in.
+//
+// Callers may skip [Filter.Process] for such a view, or call it with dst equal to the view
+// of src. Process must then not write any pixel: it only updates the filter's other results,
+// such as annotations or detections. Filters with such results rely on callers doing so;
+// filters without them return immediately.
 type Viewer interface {
 	// ViewOf returns the region of the input equal to the filter's output and ok true, if
 	// there is one for the current parameters.
@@ -258,6 +272,28 @@ func (b *Buffer) Sub(r image.Rectangle) (Buffer, error) {
 	d := Dims{Width: r.Dx(), Height: r.Dy(), Stride: b.dims.Stride, Shape: b.dims.Shape}
 	off := r.Min.Y*b.dims.Stride + r.Min.X*bpp
 	return Buffer{dims: d, data: b.data[off : off+int(d.Size())]}, nil
+}
+
+// Overlaps reports whether b and o share memory: whether the byte ranges from their first
+// pixel to their last intersect. It is conservative: views of one parent whose rows
+// interleave, such as its left and right halves, overlap even though no pixel is shared.
+func (b *Buffer) Overlaps(o *Buffer) bool {
+	if len(b.data) == 0 || len(o.data) == 0 {
+		return false
+	}
+	b0 := uintptr(unsafe.Pointer(unsafe.SliceData(b.data)))
+	o0 := uintptr(unsafe.Pointer(unsafe.SliceData(o.data)))
+	return b0 < o0+uintptr(len(o.data)) && o0 < b0+uintptr(len(b.data))
+}
+
+// SameMemory reports whether b and o are the same pixels in memory: the same first byte,
+// width, height, stride and pixel size. Their shapes may differ, i.e. RGBA and LabA, so
+// filters converting between shapes of equal size can work in place.
+func (b *Buffer) SameMemory(o *Buffer) bool {
+	bd, od := b.dims, o.dims
+	return len(b.data) > 0 && unsafe.SliceData(b.data) == unsafe.SliceData(o.data) &&
+		bd.Width == od.Width && bd.Height == od.Height && bd.Stride == od.Stride &&
+		bd.Shape.BitsPerPixel() == od.Shape.BitsPerPixel()
 }
 
 // DenseDims returns the dimensions of a w×h image of shape sh with no padding between rows.

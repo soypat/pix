@@ -110,9 +110,12 @@ func (f *GaussianBlur) ViewOf(in pix.Dims) (image.Rectangle, bool) {
 	return image.Rect(0, 0, in.Width, in.Height), len(f.kernel) == 1
 }
 
-// Process implements [pix.Filter].
+// Process implements [pix.Filter]. dst may be src.
 func (f *GaussianBlur) Process(dst, src *pix.Buffer) error {
-	if err := f.check(dst, src); err != nil {
+	if r, ok := f.ViewOf(f.in); ok && f.viewing(dst, src, r) {
+		return nil
+	}
+	if err := f.checkInPlace(dst, src); err != nil {
 		return err
 	}
 	if len(f.kernel) == 1 {

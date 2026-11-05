@@ -77,9 +77,9 @@ func (f *ColorConvert) Prepare(in pix.Dims) (pix.Dims, error) {
 	return f.out, nil
 }
 
-// Process implements [pix.Filter].
+// Process implements [pix.Filter]. dst may be src for conversions between 4-byte shapes.
 func (f *ColorConvert) Process(dst, src *pix.Buffer) error {
-	if err := f.check(dst, src); err != nil {
+	if err := f.checkInPlace(dst, src); err != nil {
 		return err
 	}
 	for y := 0; y < f.in.Height; y++ {
